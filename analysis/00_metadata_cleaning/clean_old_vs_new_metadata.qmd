@@ -2,4 +2,148 @@
 title: "clean_old_vs_new_metadata"
 format: html
 ---
+# Packages
+
+```{r}
+pacman::p_load(tidyverse, readxl, here, janitor)
+```
+
+# Load metadata files
+
+```{r}
+old <- read_xlsx(here("data", "raw", "A.flavicollis_SampleID.xlsx")) |> clean_names()
+new <- read_xlsx(here("data", "raw", "myszy_Janek_2025-01-28.xlsx")) |> clean_names()
+```
+
+```{r}
+glimpse(old)
+glimpse(new)
+```
+
+# If joining by id (suffix in old, id in new), then ids need standardising
+# id_alt in new is for mice that may have been tagged twice
+
+```{r}
+old <- old |>
+  mutate(
+    id = str_trim(as.character(suffix)) # str_trim () gets rid of whitespace that may have been placed on entry
+  )
+
+new <- new |>
+  mutate(
+    id = str_trim(as.character(id)), # applying str_trim cleaning to both id and id_alt
+    id_alt = str_trim(as.character(id_alt))
+  )
+```
+
+
+
+# Filtering for NAs:
+
+Two methods here: 
+  - Looking at which IDs are not in the opposite dataset
+        Won't show duplicates/re-tags or many-to-many relationships (such as where an old ID matches multiple rows in new dataset)
+  - Filtering for a column exclusive to each dataset
+        Needs to use full_join() to combine old and new metadata by id (and id_alt).
+        If old IDs dont have a match in new (such as year_first_trap), columns unique to new dataset will be NA (and vice-versa)
+        Also handles duplicates seen in id_alt
+
+# Method 1
+
+```{r}
+# mice IDs in old but not in new
+old_missing1 <- old |>
+  filter(!id %in% new$id & !id %in% new$id_alt) |> 
+  print()
+# 55 rows
+
+# mice IDs in new but not in old
+new_missing1 <- new |>
+  filter(!id %in% old$id) |> 
+  print()
+
+```
+
+# Method 2 via full_join()
+
+```{r}
+# joining on main id
+join_main <- full_join(old, new, by = "id", suffix = c("_old","_new"))
+
+# if there's ids left in old that didnt match new id, match them to id_alt in new
+join_alt <- old |>
+  filter(!id %in% new$id) |>           # only old IDs not yet matched
+  left_join(new, by = c("id" = "id_alt"), suffix = c("_old","_new"))
+
+# combine both
+metadata_combined <- bind_rows(
+  join_main,
+  join_alt |> filter(!id %in% join_main$id)
+)
+
+```
+
+```{r}
+# mice IDs in old but not in new
+old_missing2 <- metadata_combined |>
+  filter(is.na(year_first_trap))
+
+# mice ID in new but not in old
+new_missing2 <- metadata_combined |>
+  filter(is.na(sample))   # sample is the column from old
+```
+
+# Method 1 vs method 2
+
+```{r}
+compare_methods <- function(missing1, missing2, label) {
+  only2 <- setdiff(missing2, missing1)
+  only1 <- setdiff(missing1, missing2)
+  common <- intersect(missing1, missing2)
+  
+  cat(label, ":\n")
+  cat("  Both methods:", length(common), "\n")
+  cat("  Only Method 1:", length(only1), "\n")
+  cat("  Only Method 2:", length(only2), "\n")
+  if(length(only2) > 0) cat("  IDs only caught by Method 2:", paste(only2, collapse=", "), "\n\n")
+}
+
+# run functions
+compare_methods(old_missing1 |> pull(id), old_missing2 |> pull(id), "OLD IDs missing in NEW")
+compare_methods(new_missing1 |> pull(id), new_missing2 |> pull(id), "NEW IDs missing in OLD")
+
+```
+
+# Duplicates and retagged mice
+
+```{r}
+
+# old IDs appearing more than once
+old |> 
+  count(id) |> 
+  filter(n > 1)
+
+# new IDs appearing more than once
+new |> 
+  count(id) |> 
+  filter(n > 1)
+
+# check id_alt in new
+new |> 
+  filter(!is.na(id_alt)) |> 
+  count(id_alt) |> 
+  filter(n > 1)
+
+# checking via method 2
+
+duplicates <- metadata_combined |>
+  group_by(id) |>
+  filter(n() > 1)
+
+# checking for mice that have alternate/multiple tags rather than just duplicates
+
+retagged <- metadata_combined |>
+  filter(!is.na(id_alt))  
+```
+
 
